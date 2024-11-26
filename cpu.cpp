@@ -96,6 +96,8 @@ CPU6502::CPU6502() {
     {"???", 1, &c::IMP, &c::NOP}, {"SBC", 4, &c::ABX, &c::SBC}, {"INC", 7, &c::ABX, &c::INC}, //$FE
     {"???", 1, &c::IMP, &c::NOP}
     };
+
+    reset();
 }
 
 void CPU6502::addBus(Bus* bus) {
@@ -110,6 +112,72 @@ uint8_t CPU6502::read(uint16_t addr) {
 void CPU6502::write(uint16_t addr, uint8_t value) {
     if (m_bus == nullptr) throw std::exception(std::domain_error("Bus not connected, can't write."));
     m_bus->write(addr, value);
+}
+
+void CPU6502::clock() {
+    if (execCycles == 0) {
+        uint8_t lookupInstruction = read(registers.getPC());
+        currentInstruction = instructionSet[lookupInstruction];
+
+        execCycles += currentInstruction.cycles; 
+        execCycles += (this->*currentInstruction.addressingMode)();
+        execCycles += (this->*currentInstruction.execution)();
+    }
+    m_clk++;
+    execCycles--;
+
+}
+void CPU6502::reset() {
+    registers.setA(0);
+    registers.setX(0);
+    registers.setY(0);
+    registers.setPC(read(0xFFFD) << 8 | read(0xFFFC));
+    registers.setSP(0xFD);
+    registers.setFlag(I, 1);
+
+    argAddressAbs = 0x0000;
+    argAddressRel = 0x0000;
+    fetched = 0x00;
+    execCycles = 0;
+}
+void CPU6502::irq() {
+    if (registers.getFlag(I) == 0) {
+        uint8_t sp = registers.getSP();
+        uint16_t pc = registers.getPC(false);
+        uint16_t addr = systemStack.getPageAddress() + (uint16_t)sp;
+        write(addr, (pc & 0xFF00) >> 8);
+        addr--; registers.push();
+        write(addr, (pc & 0x00FF));
+        addr--; registers.push();
+        registers.setFlag(I, 1);
+        registers.setFlag(B, 0);
+        write(addr, registers.getFlags());
+        addr--; registers.push();
+    
+        uint8_t brPC_lo = read(0xFFFE);
+        uint8_t brPC_hi = read(0xFFFF);
+        registers.setPC(brPC_hi << 8 | brPC_lo);
+        execCycles += 7;
+    }
+}
+void CPU6502::nmi() {
+    uint8_t sp = registers.getSP();
+    uint16_t pc = registers.getPC(false);
+    uint16_t addr = systemStack.getPageAddress() + (uint16_t)sp;
+    write(addr, (pc & 0xFF00) >> 8);
+    addr--; registers.push();
+    write(addr, (pc & 0x00FF));
+    addr--; registers.push();
+    registers.setFlag(I, 1);
+    registers.setFlag(B, 0);
+    write(addr, registers.getFlags());
+    addr--; registers.push();
+    
+    uint8_t brPC_lo = read(0xFFFE);
+    uint8_t brPC_hi = read(0xFFFF);
+    registers.setPC(brPC_hi << 8 | brPC_lo);
+    execCycles += 8;
+
 }
 
 uint8_t CPU6502::fetch() {
@@ -691,6 +759,7 @@ uint8_t CPU6502::RTI() {
 
     registers.setPC(brPC_hi << 8 | brPC_lo);
     registers.setFlags(flags);
+    registers.setFlag(B, 0);
     return 0;
 }
 uint8_t CPU6502::BRK() {
